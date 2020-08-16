@@ -204,10 +204,12 @@ function views_php_views_pre_render(ViewExecutable $view) {
       $view->result = array_slice($view->result, $offset, $item_per_page);
     }
   }
-  /**
-   * Internal support: create_function() emulation using anonymous functions.
-   */
-  function views_php_create_function($args, $code) {
-        return eval('return function (' . $args . ') {' . $code . '};');
-    }
+}
+
+/**
+ * Internal support: create_function() emulation using anonymous functions.
+ *
+*/
+function views_php_create_function($args, $code) {
+    return eval('return function (' . $args . ') {' . $code . '};');
 }
