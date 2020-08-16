@@ -1,0 +1,17 @@
+# Schema for the views plugins of the Views PHP module.
+
+views.area.views_php:
+  type: views_area
+  label: 'PHP'
+
+views.field.views_php:
+  type: views_field
+  label: 'PHP'
+
+views.filter.views_php:
+  type: views_filter
+  label: 'PHP'
+
+views.sort.views_php:
+  type: views_sort
+  label: 'PHP'

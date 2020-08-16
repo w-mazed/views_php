@@ -1,0 +1,213 @@
+<?php
+
+/**
+ * @file
+ * Allows to use PHP in views.
+ */
+
+use Drupal\Component\Utility\Html;
+use Drupal\Component\Render\FormattableMarkup;
+use Drupal\Core\Url;
+use Drupal\views\ViewExecutable;
+
+/**
+ * Menu access callback function; use PHP code to determine whether a user as
+ * access.
+ */
+function views_php_check_access($php_access, $view_name, $display_id, $account = NULL) {
+  $user = \Drupal::currentUser();
+  static $function = array();
+
+  if (!isset($account)) {
+    $account = $user;
+  }
+
+  if (!isset($function[$view_name . ':' . $display_id])) {
+    $function[$view_name . ':' . $display_id] = create_function('$view_name, $display_id, $account', $php_access . ';');
+  }
+
+  ob_start();
+  $access = (bool) $function[$view_name . ':' . $display_id]($view_name, $display_id, $account);
+  ob_end_clean();
+  return $access;
+}
+
+/**
+ * Helper function; builds form for PHP code options of views handlers/plugins.
+ */
+function views_php_form_element($handler, $checkbox = NULL, $input, $variables = array()) {
+  static $default_variables;
+
+  $user = \Drupal::currentUser();
+
+  if (!isset($default_variables)) {
+    $default_variables = array(
+      '$view'    => t('The view object.'),
+      '$handler' => t('The handler object.'),
+      '$plugin'  => t('The plugin object.'),
+      '$static'  => t('A variable that can be used to store reusable data per row.'),
+      '$row'     => t('Contains the retrieved record from the database per row.'),
+      '$data'    => t('Contains the retrieved record from the database for all rows.'),
+      '$results' => t('Array containing the view\'s result.'),
+      '$cache'   => t('The cache object.'),
+    );
+  }
+
+  list($name, $title, $description, $use_delimiters) = $input;
+  $container = array(
+    '#type' => 'container',
+    // @todo #tree => FALSE doesn't work here.
+    '#parents' => array('options'),
+  );
+
+  if (!empty($checkbox)) {
+    list($checkbox_name, $checkbox_title, $checkbox_description) = $checkbox;
+    $checkbox = array(
+      '#type' => 'checkbox',
+      '#title' => $checkbox_title,
+      '#description' => $checkbox_description,
+      '#default_value' => $handler->options[$checkbox_name] && !empty($handler->options[$name]),
+    );
+    $container['#states'] = array(
+      'invisible' => array(
+        'input[name="options[use_' . $name . ']"]' => array('checked' => FALSE),
+      ),
+    );
+  }
+  $container[$name] = array(
+    '#type' => 'textarea',
+    '#id' => Html::getId('edit-options-' . $name),
+    '#title' => $title,
+    '#default_value' => $handler->options[$name],
+    '#rows' => 5,
+    '#description' => $description . ' <strong>' . ($use_delimiters
+      ? t('Use &lt;?php ?&gt; delimiters to enclose PHP code.')
+      : t('Do not use &lt;?php ?&gt; delimiters.'))
+      . '</strong>',
+  );
+  // Only users with use PHP permission can set/modify input.
+  if (!$user->hasPermission('use PHP for settings')) {
+    $container[$name]['#disabled'] = TRUE;
+    $container[$name]['#value'] = $container[$name]['#default_value'];
+    $container[$name]['#description'] .= ' <strong>' . t('You do not have permission to modify this.') . '</strong>';
+  }
+
+  $items = array();
+  foreach ($variables as $variable_name => $description) {
+    if (is_int($variable_name)) {
+      $variable_name = $description;
+      $description = isset($default_variables[$description]) ? $default_variables[$description] : '';
+    }
+    $url = Url::fromUri('internal:', array('fragment' => $container[$name]['#id']));
+    $url->setOption('external', TRUE);
+    $link = \Drupal::l($variable_name, $url);
+    $items[] = new FormattableMarkup('%link: %description', [
+        '%link' => $link,
+        '%description' => $description,
+    ]);
+
+    if (strpos($variable_name, '$row') === 0) {
+      $php_value = ($input[0] == 'php_value') ? TRUE : FALSE;
+
+      foreach ($handler->view->display_handler->getHandlers('field') as $field => $field_handler) {
+        // Do not add fields that will not have data when evaluating the value code. This occurs because
+        // the value code is evaluated in hook_views_post_execute(), but field data is made available in hook_views_pre_render(),
+        // which is called after hook_views_post_execute().
+        if ($php_value && $field_handler->table != $field_handler->view->base_table) {
+          continue;
+        }
+
+        $url = Url::fromUri('internal:', array('fragment' => $container[$name]['#id']));
+        $url->setOption('external', TRUE);
+        $link = \Drupal::l($variable_name . '->' . $field, $url);
+
+                $items[] = new FormattableMarkup('%link: %description', [
+                      '%link' => $link,
+                      '%description' => $field_handler->label(),
+                    ]);
+      }
+    }
+  }
+  $container[$name . '_variables'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Available variables'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+    '#attributes' => array('class' => array('views-php-variables')),
+  );
+  $container[$name . '_variables']['variables'] = array(
+    '#theme' => 'item_list',
+    '#items' => $items,
+  );
+
+  if (!empty($checkbox)) {
+    return array($checkbox_name => $checkbox, $name => $container);
+  }
+
+  return array($name => $container);
+}
+
+
+/**
+ * Implements hook_views_pre_execute().
+ */
+function views_php_views_pre_execute(ViewExecutable $view) {
+  if (!empty($view->views_php)) {
+
+    foreach (array(/*'argument',*/ 'field', 'filter', 'sort', /*'relationship'*/) as $type) {
+      foreach ($view->$type as $id => $handler) {
+        if (is_callable(array($handler, 'phpPreExecute'))) {
+          $handler->phpPreExecute();
+        }
+      }
+    }
+
+    $view->query->setLimit(0);
+    $view->query->setOffset(0);
+  }
+}
+
+/**
+ * Implements hook_views_post_execute().
+ */
+function views_php_views_post_execute(ViewExecutable $view) {
+  if (!empty($view->views_php)) {
+    foreach (array(/*'argument',*/ 'field', 'filter', 'sort', /*'relationship'*/) as $type) {
+      foreach ($view->$type as $id => $handler) {
+        if (is_callable(array($handler, 'phpPostExecute'))) {
+          $handler->phpPostExecute();
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_views_pre_render().
+ */
+function views_php_views_pre_render(ViewExecutable $view) {
+  if (!empty($view->views_php)) {
+    foreach (array(/*'argument',*/ 'field', 'filter', 'sort', /*'relationship'*/) as $type) {
+      foreach ($view->$type as $id => $handler) {
+        if (is_callable(array($handler, 'phpPreRender'))) {
+          $handler->phpPreRender();
+        }
+      }
+    }
+
+    $view->pager->total_items = count($view->result);
+    $view->pager->updatePageInfo();
+
+    $item_per_page = $view->pager->getItemsPerPage();
+    if ($item_per_page > 0) {
+      $offset = $view->pager->getCurrentPage() * $item_per_page + $view->pager->getOffset();
+      $view->result = array_slice($view->result, $offset, $item_per_page);
+    }
+  }
+  /**
+   * Internal support: create_function() emulation using anonymous functions.
+   */
+  function views_php_create_function($args, $code) {
+        return eval('return function (' . $args . ') {' . $code . '};');
+    }
+}
